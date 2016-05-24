@@ -1,0 +1,110 @@
+#!/bin/sh
+
+PREREQ=""
+prereqs()
+{
+	echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+. /scripts/functions
+
+do_integrity_check()
+{
+	KEY="FIPS-FTW-VMW2016"
+	FILE="$1"
+	DIRECTORY=$(dirname $FILE)
+	FILENAME=$(basename $FILE)
+	DIGEST_FILE="$DIRECTORY/.$FILENAME.hmac"
+
+	if [ ! -f "$FILE" ]; then
+		return 1
+	fi
+	if [ ! -f "$DIGEST_FILE" ]; then
+		return 1
+	fi
+	DIGEST=$(openssl dgst -sha512 -hmac "$KEY" "$FILE" | tail -c 129)
+	EXPECTED_DIGEST=$(cat $DIGEST_FILE | tail -c 129)
+	if [ ${#DIGEST} != 128 ]; then
+		return 1
+	fi
+	if [ "$DIGEST" != "$EXPECTED_DIGEST" ]; then
+		return 1
+	fi
+	return 0
+}
+
+do_lookup()
+{
+	while read _k _s _v || [ -n "$_k" ]; do
+		[ "$_k" != "name" -a "$_k" != "driver" ] && continue
+		[ "$_v" != "$1" ] && continue
+		return 0
+	done </proc/crypto
+	return 1
+}
+
+# Begin real processing below this line
+FIPS_ENABLED=0
+
+for x in $(cat /proc/cmdline); do
+	case ${x} in
+	fips=*)
+		FIPS_ENABLED=1
+		;;
+	esac
+done
+
+# User does not want to boot into FIPS mode.  Exit early.
+if [ $FIPS_ENABLED -eq 0 ]; then
+	exit 0
+fi
+
+log_begin_msg "Starting FIPS validation"
+
+# User wants to boot into FIPS mode, but kernel is not configured
+# with CONFIG_FIPS.  Prevent system from booting!
+if [ ! -e "/proc/sys/crypto/fips_enabled" ]; then
+	panic "Kernel was not built with CONFIG_FIPS!"
+fi
+
+ROOT="/root"
+KERNEL_VERSION=$(uname -r)
+KERNEL="$ROOT/boot/vmlinuz-$KERNEL_VERSION"
+do_integrity_check $KERNEL || panic "Integrity test of kernel failed"
+
+# It is now time to remove FIPS modprobe blacklist
+# file and load the modules specified in 'fipsmodules'
+# file.
+rm /etc/modprobe.d/blacklist-fips.conf
+while read -r _module; do
+	RELATIVE_PATH=$(/sbin/modprobe -l "$_module")
+	FULL_PATH="$ROOT/lib/modules/$KERNEL_VERSION/$RELATIVE_PATH"
+
+	do_integrity_check $FULL_PATH || panic "Integrity test of $_module failed"
+	if [ "$_module" == "tcrypt" ]; then
+		continue
+	fi
+	if ! modprobe ${_module}; then
+		do_lookup "$_module" || panic "Module $_module missing"
+	fi
+done </etc/fipsmodules
+
+# tcrypt.ko schedules self-check tests from its module_init()
+# routine.  On error, it will either return non-zero value or
+# make the whole system to crash.
+while read -r _mode; do
+	modprobe tcrypt mode="$_mode" || panic "Self-check test $_mode failed"
+	rmmod tcrypt
+done </etc/fipsmodes
+
+log_end_msg
+
+exit 0
+

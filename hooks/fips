@@ -1,0 +1,44 @@
+#!/bin/sh
+
+OPTION=FIPS
+PREREQ=""
+
+prereqs()
+{
+	echo "$PREREQ"
+}
+
+case $1 in
+# get pre-requisites
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+# Add crypto modules to the initramfs image.
+add_modules_from_file /etc/initramfs-tools/fipsmodules
+
+# Blacklist these crypto module from getting auto-loaded
+# so that we could load them later at our discretion.
+sed -e 's/^/blacklist /' /etc/initramfs-tools/fipsmodules > ${DESTDIR}/etc/modprobe.d/blacklist-fips.conf
+
+# Copy openssl utility and all the shared libraries
+# that openssl depends on to perform integrity tests.
+copy_exec /usr/bin/openssl
+mkdir -p ${DESTDIR}/usr/lib/ssl
+cp /usr/lib/ssl/openssl.cnf ${DESTDIR}/usr/lib/ssl/openssl.cnf
+
+# basename and dirname are used to reconstruct path
+# of hmac files.
+copy_exec /usr/bin/dirname
+copy_exec /usr/bin/basename
+
+# Copy file that contains names of kernel modules that should
+# be integrity checked.  Also, copy file that contains modes
+# that should be self-checked by tcrypt module.
+cp /etc/initramfs-tools/fipsmodules ${DESTDIR}/etc/fipsmodules
+cp /etc/initramfs-tools/fipsmodes ${DESTDIR}/etc/fipsmodes
+
