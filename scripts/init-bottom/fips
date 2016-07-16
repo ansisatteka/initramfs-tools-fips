@@ -80,6 +80,7 @@ KERNEL_VERSION=$(uname -r)
 KERNEL="$ROOT/boot/vmlinuz-$KERNEL_VERSION"
 do_integrity_check $KERNEL || panic "Integrity test of kernel failed"
 
+AESNI_FLAG=$(grep -m1 -o aes /proc/cpuinfo)
 # It is now time to remove FIPS modprobe blacklist
 # file and load the modules specified in 'fipsmodules'
 # file.
@@ -88,6 +89,9 @@ while read -r _module; do
 	RELATIVE_PATH=$(/sbin/modprobe -l "$_module")
 	FULL_PATH="$ROOT/lib/modules/$KERNEL_VERSION/$RELATIVE_PATH"
 
+	if [ $AESNI_FLAG != "aes" ] && [ "$_module" == "aesni-intel" ]; then
+		continue
+	fi
 	do_integrity_check $FULL_PATH || panic "Integrity test of $_module failed"
 	if [ "$_module" == "tcrypt" ]; then
 		continue
